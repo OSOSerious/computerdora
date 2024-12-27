@@ -1,101 +1,114 @@
 import { writable } from 'svelte/store';
-import { csvConverter } from './csv-converter';
+import type { CursorPosition, ScreenContent } from '$lib/types';
+import { aiService } from './ai';
 
-interface ScreenObserverState {
-  timestamp: number;
-  cursorPosition: { x: number, y: number };
-  activeWindow: string;
-  screenContent: string;
-  capturedImage?: string;
+interface ElementInfo {
+  tag: string;
+  classes: string[];
+  id: string;
+  text: string | null;
 }
 
 export class ScreenObserverService {
-  private observationHistory: ScreenObserverState[] = [];
-  private state = writable<ScreenObserverState>({
-    timestamp: Date.now(),
-    cursorPosition: { x: 0, y: 0 },
-    activeWindow: '',
-    screenContent: '',
-  });
+  public cursorPosition = writable<CursorPosition>({ x: 0, y: 0 });
+  public screenContent = writable<ScreenContent | null>(null);
+  private isTracking = false;
+  private throttleTimeout: number | null = null;
+  private lastEvent: MouseEvent | null = null;
+  private readonly THROTTLE_MS = 16; // ~60fps
+  private isTrackingEnabled = true;
 
   constructor() {
-    this.initObservers();
+    this.handleMouseMove = this.handleMouseMove.bind(this);
+    this.handleScroll = this.handleScroll.bind(this);
+    this.handleResize = this.handleResize.bind(this);
   }
 
-  private initObservers() {
-    // Cursor tracking
-    document.addEventListener('mousemove', (event) => {
-      const newState: ScreenObserverState = {
-        timestamp: Date.now(),
-        cursorPosition: { x: event.clientX, y: event.clientY },
-        activeWindow: this.getActiveWindowName(),
-        screenContent: this.captureScreenContent()
-      };
-
-      this.updateState(newState);
-      this.recordObservation(newState);
-    });
-
-    // Active window tracking
-    this.trackActiveWindow();
-
-    // Screen content capture
-    this.captureScreenContent();
-  }
-
-  private getActiveWindowName(): string {
-    // Placeholder for active window detection
-    return document.title || 'Unknown Window';
-  }
-
-  private captureScreenContent(): string {
-    // Basic screen content capture
-    return document.body.innerText.slice(0, 500); // Limit to first 500 characters
-  }
-
-  private trackActiveWindow() {
-    // TODO: Implement cross-platform active window detection
-    // This will require platform-specific native bindings
-  }
-
-  private async captureScreenContentAsync() {
-    // TODO: Implement screen capture using native APIs
-    // Consider using electron-screenshot or platform-specific libraries
-  }
-
-  updateState(newState: Partial<ScreenObserverState>) {
-    this.state.update(current => ({ ...current, ...newState }));
-  }
-
-  private recordObservation(observation: ScreenObserverState) {
-    this.observationHistory.push(observation);
+  startTracking() {
+    if (this.isTracking) return;
+    this.isTracking = true;
     
-    // Optionally limit history size
-    if (this.observationHistory.length > 1000) {
-      this.observationHistory.shift();
+    document.addEventListener('mousemove', this.handleMouseMove);
+    document.addEventListener('scroll', this.handleScroll);
+    window.addEventListener('resize', this.handleResize);
+
+    // Initial position
+    const event = new MouseEvent('mousemove', {
+      clientX: window.innerWidth / 2,
+      clientY: window.innerHeight / 2
+    });
+    this.handleMouseMove(event);
+  }
+
+  stopTracking() {
+    if (!this.isTracking) return;
+    this.isTracking = false;
+
+    document.removeEventListener('mousemove', this.handleMouseMove);
+    document.removeEventListener('scroll', this.handleScroll);
+    window.removeEventListener('resize', this.handleResize);
+  }
+
+  private handleMouseMove = (event: MouseEvent) => {
+    if (!this.isTrackingEnabled) return;
+
+    this.lastEvent = event;
+    if (this.throttleTimeout) return;
+
+    this.throttleTimeout = window.setTimeout(() => {
+      if (!this.lastEvent) return;
+
+      const { clientX, clientY } = this.lastEvent;
+      this.cursorPosition.set({
+        x: clientX,
+        y: clientY
+      });
+
+      // Get text content under cursor
+      const element = document.elementFromPoint(clientX, clientY);
+      if (element) {
+        const elementInfo = this.getElementInfo(element);
+        this.screenContent.set({
+          text: elementInfo.text || '',
+          element: elementInfo
+        });
+      }
+
+      this.throttleTimeout = null;
+    }, this.THROTTLE_MS);
+  };
+
+  private handleScroll = () => {
+    if (this.lastEvent) {
+      this.handleMouseMove(this.lastEvent);
     }
+  };
+
+  private handleResize = () => {
+    if (this.lastEvent) {
+      this.handleMouseMove(this.lastEvent);
+    }
+  };
+
+  private getElementInfo(element: Element): ElementInfo {
+    return {
+      tag: element.tagName.toLowerCase(),
+      classes: Array.from(element.classList),
+      id: element.id,
+      text: element.textContent?.trim() || null
+    };
   }
 
-  getState() {
-    let currentState;
-    this.state.subscribe(value => { currentState = value; })();
-    return currentState;
+  toggleTracking(enabled: boolean) {
+    this.isTrackingEnabled = enabled;
   }
 
-  // Method to capture screenshot
-  async takeScreenshot() {
-    // Placeholder for screenshot logic
-    console.log('Taking screenshot...');
+  getCursorPosition() {
+    return this.cursorPosition;
   }
 
-  // Export observation history to CSV
-  exportObservationsToCsv(filename: string = 'screen_observations.csv') {
-    return csvConverter.convertScreenObservationToCSV(this.observationHistory);
-  }
-
-  // Clear observation history
-  clearObservationHistory() {
-    this.observationHistory = [];
+  getScreenContent() {
+    return this.screenContent;
   }
 }
 
